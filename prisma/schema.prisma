@@ -1,0 +1,287 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider = "postgresql"
+  extensions = [vector]
+}
+
+model User {
+  id           String    @id @default(cuid())
+  name         String
+  email        String    @unique
+  passwordHash String
+  role         String    @default("user")
+  tier         String    @default("free")
+  isActive     Boolean   @default(true)
+  deletedAt    DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  roles         UserRole[]
+  refreshTokens RefreshToken[]
+  documents     Document[]
+  conversations Conversation[]
+  usageLogs     UsageLog[]
+
+  @@index([email])
+}
+
+model Role {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  isDefault   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users       UserRole[]
+  permissions RolePermission[]
+}
+
+model Permission {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  resource    String
+  action      String
+  createdAt   DateTime @default(now())
+
+  roles       RolePermission[]
+
+  @@unique([resource, action])
+}
+
+model UserRole {
+  userId    String
+  roleId    String
+  assignedAt DateTime @default(now())
+  assignedBy String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@index([roleId])
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+}
+
+model Document {
+  id         String    @id @default(cuid())
+  userId     String
+  status     String    @default("READY")
+  filename   String    @default("document.txt")
+  content    String    @default("") @db.Text
+  chunkCount Int       @default(0)
+  error      String?
+  title      String    @default("")
+  deletedAt  DateTime?
+  deletedBy  String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chunks Chunk[]
+  messages Message[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([userId, status])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Chunk {
+  id         String   @id @default(uuid())
+  documentId String
+  index      Int
+  content    String
+  tokenCount Int
+  // Vector embedding — 1536 dimensions for text-embedding-3-small
+  embedding  Unsupported("vector(1536)")?
+  createdAt  DateTime @default(now())
+
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+}
+
+model Conversation {
+  id        String    @id @default(uuid())
+  userId    String
+  title     String    @default("New conversation")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages Message[]
+
+  @@index([userId, updatedAt])
+}
+
+model Message {
+  id               String    @id @default(uuid())
+  conversationId   String
+  documentId       String?
+  role             String
+  content          String    @db.Text
+  promptTokens     Int       @default(0)
+  completionTokens Int       @default(0)
+  costUsd          Float     @default(0)
+  metadata         String?
+  createdAt        DateTime  @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  document     Document?    @relation(fields: [documentId], references: [id], onDelete: SetNull)
+
+  @@index([conversationId, createdAt])
+  @@index([documentId])
+}
+
+model UsageLog {
+  id        String   @id @default(uuid())
+  userId    String
+  action    String
+  tokens    Int      @default(0)
+  costUsd   Float    @default(0)
+  metadata  String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([action])
+}
+
+model PromptTemplate {
+  id        String   @id @default(uuid())
+  taskType  String               // 'chat', 'agent', 'summary'
+  version   String               // 'v1', 'v2', 'v3'
+  name      String               // Human-readable name
+  content   String               // The actual prompt text
+  isActive  Boolean  @default(false)
+  metadata  String?              // JSON: notes, author, changelog
+  createdAt DateTime @default(now())
+
+  @@unique([taskType, version])
+  @@index([taskType, isActive])
+}
+model AIAuditLog {
+  id             String   @id @default(uuid())
+  userId         String
+  correlationId  String
+  taskType       String
+  model          String
+  promptVersion  String
+  inputTokens    Int
+  outputTokens   Int
+  costUsd        Float
+  latencyMs      Int
+  fallbackUsed   Boolean  @default(false)
+  // Store input/output as text, NOT in metadata JSON
+  // This allows searching and analysis
+  inputSummary   String   // First 500 chars of the prompt (not full PII)
+  outputSummary  String   // First 500 chars of the response
+  createdAt      DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([taskType, createdAt])
+  @@index([model, createdAt])
+}
+
+model ReviewQueue {
+  id              String   @id @default(cuid())
+  messageId       String   @unique
+  documentId      String
+  question        String
+  generatedAnswer String   @db.Text
+  confidence      Float
+  sources         Json
+  reason          String?
+  status          ReviewStatus @default(PENDING)
+  priority        ReviewPriority @default(NORMAL)
+  reviewedBy      String?
+  editedAnswer    String?  @db.Text
+  reviewerNotes   String?  @db.Text
+  reviewedAt      DateTime?
+  escalatedAt     DateTime?
+  slaDeadline     DateTime
+  createdAt       DateTime @default(now())
+
+  message         Message  @relation(fields: [messageId], references: [id])
+  document        Document @relation(fields: [documentId], references: [id])
+  reviewer        User?    @relation(fields: [reviewedBy], references: [id])
+
+  @@index([status, priority, createdAt])
+  @@index([reviewedBy])
+  @@index([slaDeadline])
+}
+
+enum ReviewStatus {
+  PENDING
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  ESCALATED
+}
+
+enum ReviewPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+model Conversation {
+  // ... existing fields from Week 4 ...
+  summary       String?   @db.Text    // NEW: rolling summary
+  summaryTokens Int       @default(0) // NEW: tokens in summary
+  messageCount  Int       @default(0) // NEW: total messages
+}
+
+model Memory {
+  id          String   @id @default(cuid())
+  userId      String
+  type        MemoryType
+  content     String   @db.Text
+  embedding   Unsupported("vector(1536)")?
+  source      String?         // which conversation/document
+  importance  Float    @default(0.5)  // 0 to 1
+  accessCount Int      @default(0)    // times retrieved
+  lastAccessedAt DateTime?
+  expiresAt   DateTime?       // null = never expires
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user        User     @relation(fields: [userId], references: [id])
+
+  @@index([userId, type])
+  @@index([expiresAt])
+}
+
+enum MemoryType {
+  FACT          // "User works at Acme Corp"
+  PREFERENCE    // "User prefers concise answers"
+  PATTERN       // "User frequently asks about revenue"
+  CORRECTION    // "User corrected: Q3 was $4.2M not $4.1M"
+}
